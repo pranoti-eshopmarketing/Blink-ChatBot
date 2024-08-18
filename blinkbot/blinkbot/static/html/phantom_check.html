@@ -1,0 +1,31 @@
+<!-- phantom_check.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phantom Wallet Check</title>
+</head>
+<body>
+    <script>
+        const getProvider = () => {
+            if ('phantom' in window) {
+                const provider = window.phantom?.solana;
+
+                if (provider?.isPhantom) {
+                    // Redirect to the bot or wallet creation flow
+                    window.location.href = 'https://yourbotconfirmation.com/success';
+                    return provider;
+                }
+            }
+
+            // Redirect to Phantom Wallet installation page
+            window.open('https://phantom.app/', '_blank');
+            alert('Phantom Wallet not found! Please install it to proceed.');
+        };
+
+        // Automatically call getProvider on page load
+        window.onload = getProvider;
+    </script>
+</body>
+</html>
