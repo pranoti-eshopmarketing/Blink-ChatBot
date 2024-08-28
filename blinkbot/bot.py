@@ -3,15 +3,42 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'blinkbot.settings')
 django.setup()
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.ext import CommandHandler, CallbackContext, ApplicationBuilder, CallbackQueryHandler
+from telegram.ext import CommandHandler, filters, CallbackContext, ApplicationBuilder, CallbackQueryHandler, ContextTypes, MessageHandler
 from dotenv import load_dotenv
 import logging
-from phantomConnect import create_solana_wallet
-from selenium import webdriver
-from selenium.webdriver.support.ui import WebDriverWait
-from colorama import Fore, Style
+from phantomConnect import create_solana_wallet, buy_solana, price
+from blinkbot.models import UserProfile
+from asgiref.sync import sync_to_async
 
-async def start(update: Update, context : CallbackContext) -> None : 
+async def start(update: Update, context : CallbackContext) -> None :
+    chat_id = update.effective_chat.id
+    username = update.effective_chat.username
+    # Example of checking if a user profile exists
+    user_profile = await sync_to_async(UserProfile.objects.get)(chat_id=chat_id)
+    if user_profile : 
+        pass
+        
+    #if wallet is not created then create wallet
+    else :
+        creds = create_solana_wallet()
+        wallet_address = creds[0]
+        private_key = creds[1]
+        
+        # else take public key from db
+        # ---- logic here------
+        chat_id = update.effective_chat.id
+        username = update.effective_chat.username
+        
+        #adding data to db
+        await sync_to_async(UserProfile.objects.update_or_create)(
+            chat_id=chat_id,
+            defaults={
+                'username': username,
+                'public_key': wallet_address,
+                'private_key': private_key,
+            }
+        )
+    
     keyboard = [[InlineKeyboardButton("Create Wallet", callback_data='create_wallet')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     welcome_message ="""   
@@ -34,16 +61,20 @@ async def start(update: Update, context : CallbackContext) -> None :
     )
     
 async def create_wallet(update : Update, context : CallbackContext):
-    
-    creds = create_solana_wallet()
-    wallet_address = creds[0]
-    private_key = creds[1]
+    chat_id = update.effective_chat.id
+    user_profile = await sync_to_async(UserProfile.objects.get)(chat_id=chat_id)
+    #get wallet address and private key 
+    wallet_address = user_profile.public_key
+    private_key =  user_profile.private_key
+    # creds = create_solana_wallet()
+    # wallet_address = creds[0]
+    # private_key = creds[1]
     query = update.callback_query
     await query.answer()
     
     message = f"Your wallet details:\n\n💰Balance: *0 SOL*\n\nTo start trading, send some SOL to your Mon3y address.\n\n wallet address: *{wallet_address}* (Tap to copy) \n private key: *{private_key}* \n\n Once done, tap to refresh and your balance will appear here.\n\n *How to buy a token?* \n\n Simply enter the token symbol or contract address."
     
-    buy = InlineKeyboardButton("buy", callback_data='buy')
+    buy = InlineKeyboardButton("Buy", callback_data='buy')
     sell_and_manage = InlineKeyboardButton("Sell & Manage", callback_data='sellndmanage')
     orders = InlineKeyboardButton("Orders", callback_data='orders')
     my_points = InlineKeyboardButton("My points", callback_data='mypoints')
@@ -193,6 +224,67 @@ async def wallet(update : Update, context : CallbackContext) :
         logging.error(f"Error in 'help' function: {e}")
         await query.message.reply_text("An error occurred while processing your request.")
 
+# user_states = {}
+
+async def Buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    keyboard = [[InlineKeyboardButton("Close", callback_data='close')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.reply_text(
+        "Buy Token:\n\nTo buy a token enter a ticker, token address, or a URL from pump.fun, Birdeye, Dexscreener or Meteora.",
+        reply_markup=reply_markup
+    )
+    # user_states[update.message.chat_id] = 'awaiting_token'
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query:
+        if query.data == 'close':
+            await query.message.delete()  # Delete the message with the "Close" button
+        await query.answer()  # Acknowledge the button press
+    else:
+        print("Received callback query without query data.")
+    
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # user_id = update.message.chat_id
+    print(update.message.text)
+    if update.message.text:
+        token_address = update.message.text  # User-provided token address or ticker
+        print("token_address", token_address)
+        data = price(token_address)
+        name = data['pairs'][0]['baseToken']['name']
+        symbol = data['pairs'][0]['baseToken']['symbol']
+        priceUsd = data['pairs'][0]['priceUsd']
+        m5 = data['pairs'][0]['priceChange']['m5']
+        h1 = data['pairs'][0]['priceChange']['h1']
+        h6 = data['pairs'][0]['priceChange']['h6']
+        h24 = data['pairs'][0]['priceChange']['h24']
+        # Generate dummy token details for demonstration
+        token_details = (
+            f"{name} | {symbol} | {token_address}\n\n"
+            f"Price: ${priceUsd}\n"
+            f"5m: {m5}%, 1h: {h1}%, 6h: {h6}%, 24h: {h24}%\n"
+            f"-------static data------\n"
+            f"Market Cap: $8.85B\n\n"
+            f"Price Impact (5.0000 SOL): 0.99%\n\n"
+            f"Wallet Balance: 0.0048 SOL\n"
+            f"To buy press one of the buttons below."
+        )
+        
+        # Example buttons for buying
+        keyboard = [
+            [InlineKeyboardButton("Buy Now", url="http://example.com/buy")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(token_details, reply_markup=reply_markup)
+        buy_solana(update.message.text)
+        # Reset user state
+        # user_states.pop(user_id, None)
+    else:
+        await update.message.reply_text("Please use the /buy command to start the process.")
+      
+         
 async def settings(update : Update, context : CallbackContext):
     query = update.callback_query
     await query.answer()
@@ -274,6 +366,11 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(help, pattern='help'))
     application.add_handler(CallbackQueryHandler(wallet, pattern='wallet'))
     application.add_handler(CallbackQueryHandler(settings, pattern='settings'))
+    application.add_handler(CallbackQueryHandler(Buy, pattern='buy'))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(button))
+    
+    #application starts
     application.run_polling()
     
 if __name__ == '__main__':
